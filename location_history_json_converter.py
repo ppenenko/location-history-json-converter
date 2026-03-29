@@ -568,9 +568,18 @@ def main():
 
         if "locations" in data:
             items = data["locations"]
-        elif "rawSignals" in data:
+        elif "rawSignals" in data or "semanticSegments" in data:
             items = []
-            for signal in data["rawSignals"]:
+
+            def _parse_latlng(latlng_str):
+                """Parse 'lat°, lon°' string, tolerant of encoding artifacts."""
+                lat_str, lon_str = latlng_str.split(",")
+                lat = float("".join(c for c in lat_str if c.isdigit() or c in ".-"))
+                lon = float("".join(c for c in lon_str if c.isdigit() or c in ".-"))
+                return lat, lon
+
+            # --- Parse rawSignals (individual GPS pings) ---
+            for signal in data.get("rawSignals", []):
                 if "position" not in signal:
                     continue
                 pos = signal["position"]
@@ -578,12 +587,7 @@ def main():
                     continue
                 if "timestamp" not in pos or not pos.get("timestamp"):
                     continue
-                # Parses e.g. "35.0537963°, 135.6730386°"
-                lat_str, lon_str = pos["LatLng"].split(",")
-                # Robust extraction ignoring corrupted encodings (like Â°)
-                lat = float("".join(c for c in lat_str if c.isdigit() or c in ".-"))
-                lon = float("".join(c for c in lon_str if c.isdigit() or c in ".-"))
-                
+                lat, lon = _parse_latlng(pos["LatLng"])
                 item = {
                     "latitudeE7": int(lat * 1e7),
                     "longitudeE7": int(lon * 1e7),
@@ -596,8 +600,47 @@ def main():
                 if "speedMetersPerSecond" in pos:
                     item["speed"] = pos["speedMetersPerSecond"]
                 items.append(item)
+
+            # --- Parse semanticSegments (visits and activities) ---
+            for seg in data.get("semanticSegments", []):
+                if "visit" in seg:
+                    # Visit: single location for a time range
+                    visit = seg["visit"]
+                    tc = visit.get("topCandidate", {})
+                    loc = tc.get("placeLocation", {})
+                    latlng = loc.get("latLng")
+                    if not latlng:
+                        continue
+                    lat, lon = _parse_latlng(latlng)
+                    # Emit a point at start and end of visit
+                    for ts_key in ("startTime", "endTime"):
+                        ts = seg.get(ts_key)
+                        if ts:
+                            items.append({
+                                "latitudeE7": int(lat * 1e7),
+                                "longitudeE7": int(lon * 1e7),
+                                "timestamp": ts
+                            })
+                elif "activity" in seg:
+                    # Activity: start and end locations
+                    act = seg["activity"]
+                    for point_key, ts_key in [("start", "startTime"), ("end", "endTime")]:
+                        point = act.get(point_key, {})
+                        latlng = point.get("latLng")
+                        ts = seg.get(ts_key)
+                        if latlng and ts:
+                            lat, lon = _parse_latlng(latlng)
+                            items.append({
+                                "latitudeE7": int(lat * 1e7),
+                                "longitudeE7": int(lon * 1e7),
+                                "timestamp": ts
+                            })
+
+            # Sort all items chronologically for gpxtracks
+            items.sort(key=_get_timestampms)
+            print("Parsed %d location points from Timeline JSON" % len(items))
         else:
-            print("Unknown JSON format: neither 'locations' nor 'rawSignals' found.")
+            print("Unknown JSON format: neither 'locations' nor 'rawSignals'/'semanticSegments' found.")
             return
 
     try:
