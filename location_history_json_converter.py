@@ -566,7 +566,39 @@ def main():
             print("Error decoding json: %s" % error)
             return
 
-        items = data["locations"]
+        if "locations" in data:
+            items = data["locations"]
+        elif "rawSignals" in data:
+            items = []
+            for signal in data["rawSignals"]:
+                if "position" not in signal:
+                    continue
+                pos = signal["position"]
+                if "LatLng" not in pos:
+                    continue
+                if "timestamp" not in pos or not pos.get("timestamp"):
+                    continue
+                # Parses e.g. "35.0537963°, 135.6730386°"
+                lat_str, lon_str = pos["LatLng"].split(",")
+                # Robust extraction ignoring corrupted encodings (like Â°)
+                lat = float("".join(c for c in lat_str if c.isdigit() or c in ".-"))
+                lon = float("".join(c for c in lon_str if c.isdigit() or c in ".-"))
+                
+                item = {
+                    "latitudeE7": int(lat * 1e7),
+                    "longitudeE7": int(lon * 1e7),
+                    "timestamp": pos["timestamp"]
+                }
+                if "accuracyMeters" in pos:
+                    item["accuracy"] = pos["accuracyMeters"]
+                if "altitudeMeters" in pos:
+                    item["altitude"] = pos["altitudeMeters"]
+                if "speedMetersPerSecond" in pos:
+                    item["speed"] = pos["speedMetersPerSecond"]
+                items.append(item)
+        else:
+            print("Unknown JSON format: neither 'locations' nor 'rawSignals' found.")
+            return
 
     try:
         f_out = open(args.output, "w")
